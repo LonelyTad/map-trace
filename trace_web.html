@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高德地图轨迹动画（基于历史数据）</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            -webkit-user-select: none; /* Safari */
+            -moz-user-select: none;    /* Firefox */
+            -ms-user-select: none;     /* Internet Explorer/Edge */
+            user-select: none;         /* Standard */
+        }
+        #mapContainer {
+            width: 100%;
+            height: 100vh;
+        }
+        .control-panel {
+            padding: 10px 15px;
+            background: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            width: -webkit-max-content; /* Safari/Chrome */
+            width: -moz-max-content;    /* Firefox */
+            width: max-content;
+        }
+        button {
+            padding: 8px 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #speedControl {
+            width: 100px;
+            vertical-align: middle;
+            -webkit-appearance: none;
+            height: 5px;
+            background: #ddd;
+            border-radius: 5px;
+            outline: none;
+            opacity: 0.7;
+            transition: opacity .2s;
+        }
+        #speedControl::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background: #007bff;
+            cursor: pointer;
+        }
+        #speedControl:hover {
+            opacity: 1;
+        }
+        .speed-label {
+            font-size: 14px;
+            color: #333;
+        }
+        .status-message {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: rgba(0,0,0,0.75);
+            color: white;
+            padding: 12px 25px;
+            border-radius: 25px;
+            z-index: 200;
+            display: none;
+            font-size: 15px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            white-space: pre-wrap; /* 允许换行 */
+            text-align: center;
+        }
+        .amap-info-outer {
+            background: transparent !important; /* 使信息窗口背景完全透明 */
+            border: none !important; /* 移除默认边框 */
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15); /* 保留阴影 */
+            border-radius: 5px;
+        }
+        .amap-info-close {
+            top: 8px !important;
+            right: 8px !important;
+        }
+    </style>
+    <!-- 引入高德地图API -->
+    <script type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=2f28a8c7d7ddfec8ebdcdff2a977f9bb&plugin=AMap.ToolBar,AMap.Scale,AMap.GeometryUtil"></script>
+</head>
+<body>
+    <div id="mapContainer"></div>
+    <div class="control-panel">
+        <button id="startBtn" onclick="startAnimation()">开始</button>
+        <button id="pauseBtn" onclick="pauseAnimation()" disabled>暂停</button>
+        <button id="resetBtn" onclick="resetAnimation()" disabled>重置</button>
+        <span class="speed-label">速度：</span>
+        <input type="range" id="speedControl" min="0.5" max="3" step="0.1" value="1" aria-label="动画速度控制">
+        <span id="speedValue">1.0x</span>
+    </div>
+    <div id="statusMessage" class="status-message"></div>
+
+    <script>
+        // 高德API密钥
+        const AMapKey = '2f28a8c7d7ddfec8ebdcdff2a977f9bb';
+
+        // 1. 你的地址数据（来源于address_cache.csv 和 dynamic_trajectory.py 的日期）
+        // 按照 dynamic_trajectory.py 中的原始顺序和日期，结合 address_cache.csv 中的经纬度
+        const locationData = [
+            {"address": "浙江省湖州市", "date_str": "3.16", "lat": 30.894178, "lng": 120.086881},
+            {"address": "湖州市德清县", "date_str": "3.16", "lat": 30.54251, "lng": 119.9774},
+            {"address": "安徽省淮南市", "date_str": "3.17", "lat": 32.585384, "lng": 117.018603},
+            {"address": "淮南市谢家集区", "date_str": "3.18", "lat": 32.599173, "lng": 116.860026},
+            {"address": "淮南市八公山区", "date_str": "3.19", "lat": 32.630922, "lng": 116.832979},
+            {"address": "河南省许昌市", "date_str": "3.20", "lat": 34.03732, "lng": 113.852004},
+            {"address": "许昌市禹州市", "date_str": "3.21", "lat": 34.142442, "lng": 113.488715},
+            {"address": "禹州市公安局小吕派出所", "date_str": "3.22", "lat": 34.052739, "lng": 113.474547},
+            {"address": "禹州市公安局颖川派出所", "date_str": "3.23", "lat": 34.14769, "lng": 113.486725},
+            {"address": "陕西省渭南市", "date_str": "3.24", "lat": 34.520632, "lng": 109.470962},
+            {"address": "渭南市华阴市", "date_str": "3.24", "lat": 34.566552, "lng": 110.092286},
+            {"address": "河南省洛阳市", "date_str": "3.24", "lat": 34.619702, "lng": 112.453895},
+            {"address": "洛阳市栾川", "date_str": "3.24", "lat": 33.7857, "lng": 111.615729},
+            {"address": "宁波市奉化区", "date_str": "3.27", "lat": 29.655292, "lng": 121.406151},
+            {"address": "安徽省池州市", "date_str": "4.14", "lat": 30.674264, "lng": 117.495663},
+            {"address": "池州市石台县", "date_str": "4.15", "lat": 30.210218, "lng": 117.486211},
+            {"address": "池州市青阳县", "date_str": "4.16", "lat": 30.639006, "lng": 117.847366},
+            {"address": "池州市东至县", "date_str": "4.17", "lat": 30.111182, "lng": 117.027533},
+            {"address": "安徽省六安市", "date_str": "4.18", "lat": 31.735892, "lng": 116.519729},
+            {"address": "六安市金安区", "date_str": "4.19", "lat": 31.75014, "lng": 116.539458},
+            {"address": "安徽省宣城市", "date_str": "4.20", "lat": 30.939278, "lng": 118.759127},
+            {"address": "宣城市宁国市", "date_str": "4.21", "lat": 30.634032, "lng": 118.983085},
+            {"address": "湖北省宜昌市", "date_str": "4.22", "lat": 30.69217, "lng": 111.286962},
+            {"address": "湖北省恩施土家族苗族自治州", "date_str": "4.23", "lat": 30.272104, "lng": 109.488076},
+            {"address": "恩施屯堡派出所", "date_str": "4.24", "lat": 30.335368, "lng": 109.336014},
+            {"address": "湖北省宜昌市", "date_str": "4.25", "lat": 30.69217, "lng": 111.286962},
+            {"address": "宜昌市秭归县", "date_str": "4.26", "lat": 30.825882, "lng": 110.97793},
+            {"address": "秭归县茅坪派出所", "date_str": "4.27", "lat": 30.823078, "lng": 110.97344},
+            {"address": "江西省景德镇市", "date_str": "4.28", "lat": 29.2744, "lng": 117.184892},
+            {"address": "景德镇市浮粱县", "date_str": "4.29", "lat": 29.352493, "lng": 117.214984},
+            {"address": "安徽省宣城市宁国市", "date_str": "4.30", "lat": 30.634032, "lng": 118.983085},
+            {"address": "重庆沙坪坝区", "date_str": "5.12", "lat": 29.541017, "lng": 106.456939},
+            {"address": "双碑派出所", "date_str": "5.13", "lat": 28.297521, "lng": 104.169907},
+            {"address": "重庆沙坪坝区看守所", "date_str": "5.14", "lat": 29.541017, "lng": 106.456939},
+            {"address": "浙江省丽水市", "date_str": "5.23", "lat": 28.467694, "lng": 119.923249},
+            {"address": "丽水市莲都区", "date_str": "5.24", "lat": 28.4461, "lng": 119.912266},
+            {"address": "丽水市云和县", "date_str": "5.25", "lat": 28.116024, "lng": 119.573454},
+            {"address": "福建省泉州市", "date_str": "5.28", "lat": 24.874452, "lng": 118.675724},
+            {"address": "泉州市晋江市", "date_str": "5.30", "lat": 24.781635, "lng": 118.551659},
+            {"address": "温岭市松门派出所", "date_str": "6.4", "lat": 28.349231, "lng": 121.590071},
+            {"address": "温岭市太平派出所", "date_str": "6.5", "lat": 28.372805, "lng": 121.385435},
+            {"address": "温岭市泽国派出所", "date_str": "6.6", "lat": 28.454333, "lng": 121.348728},
+            {"address": "丽水市莲都区", "date_str": "6.16", "lat": 28.4461, "lng": 119.912266},
+            {"address": "丽水市云和县", "date_str": "6.19", "lat": 28.116024, "lng": 119.573454},
+            {"address": "福建省福州市", "date_str": "6.22", "lat": 26.074286, "lng": 119.296411},
+            {"address": "福州市永泰县", "date_str": "6.23", "lat": 25.867198, "lng": 118.932746},
+            {"address": "福州市仓山区", "date_str": "6.24", "lat": 26.047027, "lng": 119.27322},
+            {"address": "仓山区金山派出所", "date_str": "6.25", "lat": 26.042116, "lng": 119.264007},
+            {"address": "福建省泉州市", "date_str": "6.26", "lat": 24.874452, "lng": 118.675724},
+            {"address": "泉州市永春县", "date_str": "6.27", "lat": 25.321849, "lng": 118.29416},
+            {"address": "永春县东平派出所", "date_str": "6.28", "lat": 25.3036, "lng": 118.341181},
+            {"address": "福建省南平市", "date_str": "6.29", "lat": 27.382829, "lng": 118.081325},
+            {"address": "南平市浦城县", "date_str": "6.30", "lat": 27.917804, "lng": 118.541079},
+            {"address": "浦城县石陂派出所", "date_str": "7.1", "lat": 27.698757, "lng": 118.37154}
+        ];
+
+        // 2. 全局变量
+        let map, marker, pathLine, infoWindow;
+        let currentIndex = 0; // 当前位置索引
+        let isAnimating = false; // 动画状态
+        let animationId = null; // 动画ID
+        let speed = 1; // 动画速度
+        let animationStartTime = 0; // 动画开始时间
+        let validCoords = []; // 用于存储筛选后的有效位置数据，保留原始信息
+        let pathLngLats = []; // 用于存储 AMap.LngLat 对象，供地图API使用
+        // 移除驾车路线规划服务实例和相关变量
+        // let driving; 
+        // let currentSegmentDetailedPath = []; 
+        // let currentSegmentPathIndex = 0; 
+        // let routeCache = {}; 
+
+        // 3. 初始化地图
+        function initMap() {
+            showStatus("正在加载地图...");
+            
+            if (!window.AMap || !AMapKey) {
+                showStatus("高德API或API密钥未设置，请检查配置和网络。", true);
+                return;
+            }
+
+            map = new AMap.Map('mapContainer', {
+                zoom: 6,
+                center: [116.39748, 39.908823], // 初始中心点（北京）
+                viewMode: '3D', // 开启3D视图
+                pitch: 45, // 俯视角度
+                rotation: 0,
+                zooms: [3, 18], // 限制缩放范围
+                showLabel: true // 显示地图文字标记
+            });
+
+            map.on('complete', function() {
+                console.log("地图加载完成事件触发。");
+                showStatus("地图加载完成");
+                // 确保数据已准备好
+                if (locationData.length > 0) {
+                    initPathAndMarker();
+                } else {
+                    showStatus("没有有效的轨迹数据。", true);
+                }
+            });
+
+            map.on('error', function(e) {
+                console.error("地图加载失败事件触发：", e);
+                showStatus("地图加载失败，请检查网络或API密钥：" + e.info, true);
+            });
+
+            // 添加地图控件 (已通过plugin加载，直接实例化)
+            map.addControl(new AMap.ToolBar({
+                position: 'RB' // 右下角
+            }));
+            map.addControl(new AMap.Scale());
+
+            // 移除驾车路线规划服务初始化
+            // AMap.plugin('AMap.Driving', function () {
+            //     driving = new AMap.Driving({
+            //         map: map,
+            //         panel: '', 
+            //         policy: AMap.Driving.ROAD_AND_TOLL, 
+            //         autoFitView: false 
+            //     });
+            // });
+
+            // 初始化标记点
+            marker = new AMap.Marker({
+                icon: new AMap.Icon({
+                    size: new AMap.Size(36, 36),
+                    image: 'https://a.amap.com/jsapi_demos/static/demo-center/icons/poi-marker-red.png', // 可以替换为自定义的警车图标
+                    imageSize: new AMap.Size(36, 36)
+                }),
+                anchor: 'center', // 标记点居中
+                autoRotation: false, // 暂时禁用自动旋转，检查是否解决 NaN 错误
+                offset: new AMap.Pixel(0, -18), // 微调位置
+                map: map
+            });
+
+            // 初始化路径线
+            pathLine = new AMap.Polyline({
+                strokeColor: '#3366FF',
+                strokeWeight: 4,
+                strokeOpacity: 0.8,
+                lineJoin: 'round',
+                lineCap: 'round',
+                zIndex: 50,
+                map: map
+            });
+
+            // 初始化信息窗口
+            infoWindow = new AMap.InfoWindow({
+                offset: new AMap.Pixel(0, -30),
+                autoMove: true
+            });
+        }
+
+        // 4. 初始化路径和标记点
+        function initPathAndMarker() {
+            console.log("开始初始化路径和标记点...");
+            console.log("原始位置数据 (locationData):", locationData);
+
+            if (locationData.length === 0) {
+                showStatus("没有有效的轨迹数据。", true);
+                return;
+            }
+
+            // 过滤掉没有经纬度的无效数据，并确保经纬度是浮点数
+            validCoords = locationData.filter(coord => coord.lng && coord.lat).map(coord => {
+                const parsedLng = parseFloat(coord.lng);
+                const parsedLat = parseFloat(coord.lat);
+                if (isNaN(parsedLng) || isNaN(parsedLat)) {
+                    console.error("发现无效的经纬度，跳过：", coord);
+                    return null;
+                }
+                return { ...coord, lng: parsedLng, lat: parsedLat }; // 返回包含原始数据的拷贝和解析后的经纬度
+            }).filter(coord => coord !== null);
+
+            console.log("有效位置数据 (validCoords):", validCoords);
+
+            if (validCoords.length === 0) {
+                showStatus("所有坐标均无效。", true);
+                return;
+            }
+
+            // 创建 AMap.LngLat 对象的数组，供地图API使用
+            pathLngLats = validCoords.map(coord => new AMap.LngLat(coord.lng, coord.lat));
+            console.log("用于路径和标记点的 AMap.LngLat 数组 (pathLngLats):", pathLngLats);
+
+
+            // 设置路径线
+            pathLine.setPath([pathLngLats[0]]); // 初始只显示起点，轨迹将随动画逐步绘制
+
+            // 移动标记到起点
+            currentIndex = 0;
+            const startCoordData = validCoords[currentIndex]; // 从 validCoords 获取原始数据
+            const startLngLat = pathLngLats[currentIndex];    // 从 pathLngLats 获取 AMap.LngLat 对象
+            marker.setPosition(startLngLat);
+            
+            // 暂时移除边界计算，直接设置中心和缩放
+            map.setCenter(startLngLat);
+            map.setZoom(10); // 设置一个合理的初始缩放级别
+
+            // 显示起点信息窗口
+            showInfoWindow(startCoordData); // 传递包含 address 和 date_str 的对象
+
+            // 更新按钮状态
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('resetBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+        }
+
+        // 5. 显示信息窗口
+        function showInfoWindow(coord) {
+            const content = `<div style="padding:5px 8px; min-width:120px; max-width:200px; background: rgba(255, 255, 255, 0.7); border-radius:5px;">
+                                <h3 style="margin:0 0 3px 0; font-size:14px; color:#333;">${coord.address}</h3>
+                                <p style="margin:0; color:#666; font-size:11px;">日期：${coord.date_str}</p>
+                             </div>`;
+            infoWindow.setContent(content);
+            infoWindow.open(map, new AMap.LngLat(coord.lng, coord.lat));
+        }
+
+        // 6. 动画逻辑
+        function animate() {
+            if (!isAnimating || currentIndex >= validCoords.length - 1) {
+                if (currentIndex >= validCoords.length - 1 && isAnimating) { // 动画自然结束
+                    isAnimating = false;
+                    showStatus("动画已完成！", false);
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('pauseBtn').disabled = true;
+                }
+                return;
+            }
+
+            const startLngLat = pathLngLats[currentIndex];
+            const endLngLat = pathLngLats[currentIndex + 1];
+
+            // 根据距离调整动画持续时间，使动画更自然
+            const baseDuration = 5000; 
+            const duration = baseDuration / speed; 
+            
+            const elapsed = Date.now() - animationStartTime;
+            let progress = elapsed / duration;
+
+            if (progress >= 1) { // 当前段动画完成，移动到下一段
+                currentIndex++;
+                animationStartTime = Date.now(); // 重置计时器
+                progress = 0; // 重置进度
+                
+                if (currentIndex < validCoords.length) {
+                    showInfoWindow(validCoords[currentIndex]);
+                    // 如果有自动旋转，更新旋转角度
+                    if (marker.getOptions().autoRotation) {
+                        const nextLngLat = pathLngLats[currentIndex];    // 直接使用 AMap.LngLat 对象
+                        const currentLngLat = pathLngLats[currentIndex - 1]; // 上一个 AMap.LngLat 对象
+                        // 确保计算角度时使用的点是有效的
+                        const rotation = AMap.GeometryUtil.distance(currentLngLat, nextLngLat) > 0.001 ? AMap.GeometryUtil.computeHeading(currentLngLat, nextLngLat) : 0;
+                        marker.setRotation(rotation);
+                    }
+                } else {
+                    // 所有点都已遍历完成
+                    cancelAnimationFrame(animationId);
+                    animationId = null;
+                    isAnimating = false;
+                    showStatus("动画已完成！", false);
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('pauseBtn').disabled = true;
+                    return;
+                }
+            }
+            
+            // 计算中间位置（使用缓动函数使动画更自然）
+            const easeProgress = easeInOutCubic(progress);
+            // 直接对 AMap.LngLat 对象的 lng 和 lat 属性进行插值计算
+            const lng = startLngLat.lng + (endLngLat.lng - startLngLat.lng) * easeProgress;
+            const lat = startLngLat.lat + (endLngLat.lat - startLngLat.lat) * easeProgress;
+
+            // 再次检查插值后的坐标是否为 NaN
+            if (isNaN(lng) || isNaN(lat)) {
+                console.error("[Animate Error] 插值后的坐标为 NaN！停止动画。", { lng, lat, startLngLat, endLngLat, progress, easeProgress });
+                isAnimating = false;
+                cancelAnimationFrame(animationId);
+                animationId = null;
+                showStatus("动画因插值坐标无效而停止。", true);
+                return;
+            }
+
+            // 更新标记位置
+            const currentPosition = new AMap.LngLat(lng, lat);
+            marker.setPosition(currentPosition);
+
+            // 实时更新轨迹线
+            const currentPath = pathLngLats.slice(0, currentIndex + 1); // 获取已完成的段落
+            currentPath.push(currentPosition); // 添加当前插值点
+            pathLine.setPath(currentPath);
+
+            // 移动地图中心跟随标记（平滑过渡）
+            // map.panTo(currentPosition, { duration: 100 }); // 暂时禁用，排查NaN错误
+
+            // 继续动画
+            animationId = requestAnimationFrame(animate);
+        }
+
+        // 缓动函数（使动画更自然）
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        // 移除异步函数：规划下一个主段的路线并开始/继续动画
+        // function planNextSegmentAndAnimate() { /* ... 移除此函数 ... */ }
+
+
+        // 7. 控制函数
+        function startAnimation() {
+            // 如果已经在动画中或少于2个点，则不执行任何操作
+            if (isAnimating || validCoords.length < 2) return;
+            
+            isAnimating = true;
+            // 如果是第一次开始或从重置后开始，重置计时器
+            if (animationId === null || currentIndex === 0) { 
+                animationStartTime = Date.now();
+            }
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('pauseBtn').disabled = false;
+            showStatus("动画已开始");
+            
+            // 启动动画循环
+            animationId = requestAnimationFrame(animate);
+        }
+
+        function pauseAnimation() {
+            if (!isAnimating) return;
+            
+            isAnimating = false;
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+            showStatus("动画已暂停");
+        }
+
+        function resetAnimation() {
+            pauseAnimation();
+            currentIndex = 0;
+            // 移除重置时清除详细路径和缓存
+            // currentSegmentDetailedPath = []; 
+            // currentSegmentPathIndex = 0; 
+            // routeCache = {}; 
+
+            // 使用 validCoords 和 pathLngLats 进行重置
+            if (validCoords.length > 0) {
+                const firstCoordData = validCoords[0];
+                const firstLngLat = pathLngLats[0];
+                marker.setPosition(firstLngLat);
+                map.setCenter(firstLngLat);
+                showInfoWindow(firstCoordData);
+                pathLine.setPath([firstLngLat]); // 重置轨迹线为只包含第一个点
+            }
+            
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('pauseBtn').disabled = true;
+            showStatus("动画已重置");
+        }
+
+        // 8. 速度控制
+        document.getElementById('speedControl').addEventListener('input', (e) => {
+            speed = parseFloat(e.target.value);
+            document.getElementById('speedValue').textContent = `${speed.toFixed(1)}x`;
+            
+            // 如果正在动画，重置计时器以立即应用新速度
+            if (isAnimating) {
+                animationStartTime = Date.now(); 
+            }
+        });
+
+        // 9. 状态消息显示
+        function showStatus(message, isError = false) {
+            const statusElement = document.getElementById('statusMessage');
+            statusElement.textContent = message;
+            statusElement.style.display = 'block';
+            
+            if (isError) {
+                statusElement.style.backgroundColor = 'rgba(255, 85, 85, 0.9)';
+            } else {
+                statusElement.style.backgroundColor = 'rgba(0, 0, 0, 0.75)';
+            }
+            
+            setTimeout(() => {
+                statusElement.style.display = 'none';
+            }, 3000);
+        }
+
+        // 10. 页面加载完成后初始化
+        window.onload = function() {
+            initMap();
+        };
+    </script>
+</body>
+</html> 
