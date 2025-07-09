@@ -186,7 +186,7 @@
         ];
 
         // 2. 全局变量
-        let map, marker, pathLine, infoWindow;
+        let map, marker, infoWindow; // 移除 pathLine
         let currentIndex = 0; // 当前位置索引
         let isAnimating = false; // 动画状态
         let animationId = null; // 动画ID
@@ -195,10 +195,27 @@
         let validCoords = []; // 用于存储筛选后的有效位置数据，保留原始信息
         let pathLngLats = []; // 用于存储 AMap.LngLat 对象，供地图API使用
         // 移除驾车路线规划服务实例和相关变量
-        // let driving; 
-        // let currentSegmentDetailedPath = []; 
-        // let currentSegmentPathIndex = 0; 
-        // let routeCache = {}; 
+        // let driving;
+        // let currentSegmentDetailedPath = [];
+        // let currentSegmentPathIndex = 0;
+        // let routeCache = {};
+
+        // 用于轨迹线颜色的数组
+        const traceColors = [
+            '#FF0000', // 红色
+            '#00FF00', // 绿色
+            '#0000FF', // 蓝色
+            '#FFFF00', // 黄色
+            '#FF00FF', // 品红
+            '#00FFFF', // 青色
+            '#FFA500', // 橙色
+            '#800080', // 紫色
+            '#008000', // 深绿
+            '#4B0082'  // 靛蓝
+        ];
+
+        let completedPathSegments = []; // 存储已完成的轨迹段
+        let currentAnimatingSegmentPolyline = null; // 存储当前正在动画的轨迹段
 
         // 3. 初始化地图
         function initMap() {
@@ -254,32 +271,60 @@
             // 初始化标记点
             marker = new AMap.Marker({
                 icon: new AMap.Icon({
-                    size: new AMap.Size(36, 36),
-                    image: 'https://a.amap.com/jsapi_demos/static/demo-center/icons/poi-marker-red.png', // 可以替换为自定义的警车图标
-                    imageSize: new AMap.Size(36, 36)
+                    size: new AMap.Size(64, 64), // 调整图标大小
+                    // 请将您的警车卡通图标文件放置在与 trace_web.html 相同的目录下，并确保文件名正确
+                    image: './警车.png', // 替换为您的警车图标文件名
+                    imageSize: new AMap.Size(64, 64) // 调整图标图片大小
                 }),
                 anchor: 'center', // 标记点居中
-                autoRotation: false, // 暂时禁用自动旋转，检查是否解决 NaN 错误
+                autoRotation: false, // 重新设置为 false，因为 setRotation 不可用
                 offset: new AMap.Pixel(0, -18), // 微调位置
                 map: map
             });
 
-            // 初始化路径线
-            pathLine = new AMap.Polyline({
-                strokeColor: '#3366FF',
-                strokeWeight: 4,
-                strokeOpacity: 0.8,
-                lineJoin: 'round',
-                lineCap: 'round',
-                zIndex: 50,
-                map: map
+            // 重新定义正常和翻转的警车图标
+            window.policeCarIconNormal = new AMap.Icon({
+                size: new AMap.Size(64, 64),
+                image: './警车.png',
+                imageSize: new AMap.Size(64, 64)
             });
+            window.policeCarIconFlipped = new AMap.Icon({
+                size: new AMap.Size(64, 64),
+                image: './警车反转.png', // 翻转的警车图标
+                imageSize: new AMap.Size(64, 64)
+            });
+
+            // 初始设置图标
+            marker.setIcon(window.policeCarIconNormal);
+
+            // 移除初始化路径线，因为它将动态创建
+            // pathLine = new AMap.Polyline({
+            //     strokeColor: traceColors[0],
+            //     strokeWeight: 4,
+            //     strokeOpacity: 0.8,
+            //     lineJoin: 'round',
+            //     lineCap: 'round',
+            //     zIndex: 50,
+            //     map: map
+            // });
 
             // 初始化信息窗口
             infoWindow = new AMap.InfoWindow({
                 offset: new AMap.Pixel(0, -30),
                 autoMove: true
             });
+        }
+
+        // 新增：清除所有已绘制的轨迹段
+        function clearAllPathSegments() {
+            if (currentAnimatingSegmentPolyline) {
+                map.remove(currentAnimatingSegmentPolyline);
+                currentAnimatingSegmentPolyline = null;
+            }
+            completedPathSegments.forEach(seg => {
+                map.remove(seg);
+            });
+            completedPathSegments = [];
         }
 
         // 4. 初始化路径和标记点
@@ -314,9 +359,8 @@
             pathLngLats = validCoords.map(coord => new AMap.LngLat(coord.lng, coord.lat));
             console.log("用于路径和标记点的 AMap.LngLat 数组 (pathLngLats):", pathLngLats);
 
-
-            // 设置路径线
-            pathLine.setPath([pathLngLats[0]]); // 初始只显示起点，轨迹将随动画逐步绘制
+            // 确保清除所有以前的轨迹段
+            clearAllPathSegments();
 
             // 移动标记到起点
             currentIndex = 0;
@@ -339,9 +383,15 @@
 
         // 5. 显示信息窗口
         function showInfoWindow(coord) {
-            const content = `<div style="padding:5px 8px; min-width:120px; max-width:200px; background: rgba(255, 255, 255, 0.7); border-radius:5px;">
-                                <h3 style="margin:0 0 3px 0; font-size:14px; color:#333;">${coord.address}</h3>
-                                <p style="margin:0; color:#666; font-size:11px;">日期：${coord.date_str}</p>
+            const content = `<div style="padding:15px 20px; min-width:180px; max-width:250px; background: rgba(255, 255, 255, 0.95); border-radius:10px; box-shadow: 0 6px 20px rgba(0,0,0,0.18); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+                                <div style="display:flex; align-items:center; margin-bottom:10px;">
+                                    <span style="font-size:20px; color:#007bff; margin-right:8px;">📍</span>
+                                    <h3 style="margin:0; font-size:16px; color:#333; font-weight:600; line-height:1.4;">${coord.address}</h3>
+                                </div>
+                                <div style="display:flex; align-items:center; border-top:1px solid #eee; padding-top:10px;">
+                                    <span style="font-size:18px; color:#6c757d; margin-right:8px;">📅</span>
+                                    <p style="margin:0; color:#555; font-size:13px; font-weight:400;">日期：<span style="font-weight:600; color:#333;">${coord.date_str}</span></p>
+                                </div>
                              </div>`;
             infoWindow.setContent(content);
             infoWindow.open(map, new AMap.LngLat(coord.lng, coord.lat));
@@ -349,62 +399,110 @@
 
         // 6. 动画逻辑
         function animate() {
-            if (!isAnimating || currentIndex >= validCoords.length - 1) {
-                if (currentIndex >= validCoords.length - 1 && isAnimating) { // 动画自然结束
+            if (!isAnimating || currentIndex >= validCoords.length) { // Changed condition to >=
+                if (currentIndex >= validCoords.length && isAnimating) { // 动画自然结束
                     isAnimating = false;
                     showStatus("动画已完成！", false);
                     document.getElementById('startBtn').disabled = true;
                     document.getElementById('pauseBtn').disabled = true;
+                    // 确保最后一个动画段被完整添加到已完成列表
+                    if (currentAnimatingSegmentPolyline) {
+                        // 这里我们使用 currentIndex - 1 作为最后一个已完成段的起点，currentIndex 作为终点
+                        // 因为当 currentIndex >= validCoords.length 时，前一个 currentIndex 才是最后一个点的索引。
+                        const lastSegmentStart = pathLngLats[currentIndex - 1]; 
+                        const lastSegmentEnd = pathLngLats[currentIndex - 1]; // 修正，这里应该是最后一个有效的点
+                        currentAnimatingSegmentPolyline.setPath([lastSegmentStart, lastSegmentEnd]);
+                        completedPathSegments.push(currentAnimatingSegmentPolyline);
+                        currentAnimatingSegmentPolyline = null;
+                    }
                 }
                 return;
             }
 
-            const startLngLat = pathLngLats[currentIndex];
-            const endLngLat = pathLngLats[currentIndex + 1];
+            const startLngLatOfCurrentAnimatingSegment = pathLngLats[currentIndex];
+            const endLngLatOfCurrentAnimatingSegment = pathLngLats[currentIndex + 1]; // This can be undefined if it's the very last point
 
-            // 根据距离调整动画持续时间，使动画更自然
-            const baseDuration = 5000; 
+            // 如果是最后一个点，没有下一段要动画
+            if (!endLngLatOfCurrentAnimatingSegment) {
+                // 确保标记已在最终位置
+                marker.setPosition(startLngLatOfCurrentAnimatingSegment);
+                // 确保最后一个动画段被完整添加到已完成列表
+                if (currentAnimatingSegmentPolyline) {
+                    const finalSegmentStart = pathLngLats[currentIndex - 1];
+                    const finalSegmentEnd = pathLngLats[currentIndex]; // 动画的最后一个点
+                    currentAnimatingSegmentPolyline.setPath([finalSegmentStart, finalSegmentEnd]);
+                    completedPathSegments.push(currentAnimatingSegmentPolyline);
+                    currentAnimatingSegmentPolyline = null;
+                }
+                // 停止动画
+                isAnimating = false;
+                showStatus("动画已完成！", false);
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('pauseBtn').disabled = true;
+                cancelAnimationFrame(animationId);
+                animationId = null;
+                return;
+            }
+
+
+            const baseDuration = 5000; // 每个动画段默认5秒
             const duration = baseDuration / speed; 
-            
             const elapsed = Date.now() - animationStartTime;
             let progress = elapsed / duration;
 
             if (progress >= 1) { // 当前段动画完成，移动到下一段
+                // 确认当前动画段已完全绘制并添加到已完成列表
+                if (currentAnimatingSegmentPolyline) {
+                    currentAnimatingSegmentPolyline.setPath([startLngLatOfCurrentAnimatingSegment, endLngLatOfCurrentAnimatingSegment]);
+                    completedPathSegments.push(currentAnimatingSegmentPolyline);
+                    currentAnimatingSegmentPolyline = null; // 为下一段重置
+                }
+
                 currentIndex++;
                 animationStartTime = Date.now(); // 重置计时器
                 progress = 0; // 重置进度
-                
-                if (currentIndex < validCoords.length) {
+
+                // 检查是否还有更多轨迹段要动画
+                if (currentIndex < validCoords.length - 1) {
                     showInfoWindow(validCoords[currentIndex]);
-                    // 如果有自动旋转，更新旋转角度
-                    if (marker.getOptions().autoRotation) {
-                        const nextLngLat = pathLngLats[currentIndex];    // 直接使用 AMap.LngLat 对象
-                        const currentLngLat = pathLngLats[currentIndex - 1]; // 上一个 AMap.LngLat 对象
-                        // 确保计算角度时使用的点是有效的
-                        const rotation = AMap.GeometryUtil.distance(currentLngLat, nextLngLat) > 0.001 ? AMap.GeometryUtil.computeHeading(currentLngLat, nextLngLat) : 0;
-                        marker.setRotation(rotation);
+
+                    // 为新的轨迹段（从 pathLngLats[currentIndex] 到 pathLngLats[currentIndex + 1]）确定方向
+                    const newSegmentStart = pathLngLats[currentIndex];
+                    const newSegmentEnd = pathLngLats[currentIndex + 1];
+                    const deltaLng = newSegmentEnd.lng - newSegmentStart.lng;
+
+                    if (deltaLng < 0) { // 向西（左）移动
+                        marker.setIcon(window.policeCarIconNormal);
+                    } else if (deltaLng > 0) { // 向东（右）移动
+                        marker.setIcon(window.policeCarIconFlipped);
                     }
-                } else {
-                    // 所有点都已遍历完成
-                    cancelAnimationFrame(animationId);
-                    animationId = null;
-                    isAnimating = false;
-                    showStatus("动画已完成！", false);
-                    document.getElementById('startBtn').disabled = true;
-                    document.getElementById('pauseBtn').disabled = true;
-                    return;
+                    // 如果经度没有变化，图标保持不变
+
+                    // 为新轨迹段创建新的 Polyline
+                    currentAnimatingSegmentPolyline = new AMap.Polyline({
+                        strokeColor: traceColors[currentIndex % traceColors.length], // 新轨迹段的颜色
+                        strokeWeight: 4,
+                        strokeOpacity: 0.8,
+                        lineJoin: 'round',
+                        lineCap: 'round',
+                        zIndex: 50,
+                        map: map,
+                        path: [newSegmentStart] // 从新轨迹段的起点开始
+                    });
+                } else { // 这表示 currentIndex 现在是 validCoords.length - 1（最后一个点）
+                    // 没有更多轨迹段要动画。动画将在到达此点后停止。
+                    // 标记将移动到最终位置。图标应保持上一个已完成轨迹段的方向。
+                    currentAnimatingSegmentPolyline = null; // 确保为 null，因为没有新轨迹段正在动画
                 }
             }
             
-            // 计算中间位置（使用缓动函数使动画更自然）
+            // 沿当前轨迹段插值位置
             const easeProgress = easeInOutCubic(progress);
-            // 直接对 AMap.LngLat 对象的 lng 和 lat 属性进行插值计算
-            const lng = startLngLat.lng + (endLngLat.lng - startLngLat.lng) * easeProgress;
-            const lat = startLngLat.lat + (endLngLat.lat - startLngLat.lat) * easeProgress;
+            const lng = startLngLatOfCurrentAnimatingSegment.lng + (endLngLatOfCurrentAnimatingSegment.lng - startLngLatOfCurrentAnimatingSegment.lng) * easeProgress;
+            const lat = startLngLatOfCurrentAnimatingSegment.lat + (endLngLatOfCurrentAnimatingSegment.lat - startLngLatOfCurrentAnimatingSegment.lat) * easeProgress;
 
-            // 再次检查插值后的坐标是否为 NaN
             if (isNaN(lng) || isNaN(lat)) {
-                console.error("[Animate Error] 插值后的坐标为 NaN！停止动画。", { lng, lat, startLngLat, endLngLat, progress, easeProgress });
+                console.error("[Animate Error] 插值后的坐标为 NaN！停止动画。", { lng, lat, startLngLatOfCurrentAnimatingSegment, endLngLatOfCurrentAnimatingSegment, progress, easeProgress });
                 isAnimating = false;
                 cancelAnimationFrame(animationId);
                 animationId = null;
@@ -412,19 +510,14 @@
                 return;
             }
 
-            // 更新标记位置
             const currentPosition = new AMap.LngLat(lng, lat);
             marker.setPosition(currentPosition);
 
-            // 实时更新轨迹线
-            const currentPath = pathLngLats.slice(0, currentIndex + 1); // 获取已完成的段落
-            currentPath.push(currentPosition); // 添加当前插值点
-            pathLine.setPath(currentPath);
+            // 更新当前动画轨迹段的路径
+            if (currentAnimatingSegmentPolyline) {
+                currentAnimatingSegmentPolyline.setPath([startLngLatOfCurrentAnimatingSegment, currentPosition]);
+            }
 
-            // 移动地图中心跟随标记（平滑过渡）
-            // map.panTo(currentPosition, { duration: 100 }); // 暂时禁用，排查NaN错误
-
-            // 继续动画
             animationId = requestAnimationFrame(animate);
         }
 
@@ -443,9 +536,33 @@
             if (isAnimating || validCoords.length < 2) return;
             
             isAnimating = true;
-            // 如果是第一次开始或从重置后开始，重置计时器
+            // 如果是第一次开始或从重置后开始，重置计时器并创建第一个动画段
             if (animationId === null || currentIndex === 0) { 
                 animationStartTime = Date.now();
+                if (validCoords.length > 1) { // 确保至少有一个轨迹段
+                    // 为第一个轨迹段设置图标方向
+                    const firstSegmentStart = pathLngLats[0];
+                    const firstSegmentEnd = pathLngLats[1];
+                    const deltaLng = firstSegmentEnd.lng - firstSegmentStart.lng;
+
+                    if (deltaLng < 0) { // 向西（左）移动
+                        marker.setIcon(window.policeCarIconNormal);
+                    } else if (deltaLng > 0) { // 向东（右）移动
+                        marker.setIcon(window.policeCarIconFlipped);
+                    }
+                    // 如果经度没有变化，保持初始图标
+
+                    currentAnimatingSegmentPolyline = new AMap.Polyline({
+                        strokeColor: traceColors[0], // 第一个轨迹段的颜色
+                        strokeWeight: 4,
+                        strokeOpacity: 0.8,
+                        lineJoin: 'round',
+                        lineCap: 'round',
+                        zIndex: 50,
+                        map: map,
+                        path: [firstSegmentStart] // 初始路径只包含起点
+                    });
+                }
             }
             document.getElementById('startBtn').disabled = true;
             document.getElementById('pauseBtn').disabled = false;
@@ -477,6 +594,9 @@
             // currentSegmentPathIndex = 0; 
             // routeCache = {}; 
 
+            // 清除所有已绘制的轨迹段
+            clearAllPathSegments();
+
             // 使用 validCoords 和 pathLngLats 进行重置
             if (validCoords.length > 0) {
                 const firstCoordData = validCoords[0];
@@ -484,8 +604,14 @@
                 marker.setPosition(firstLngLat);
                 map.setCenter(firstLngLat);
                 showInfoWindow(firstCoordData);
-                pathLine.setPath([firstLngLat]); // 重置轨迹线为只包含第一个点
+                // 重置警车图标为默认（向左）
+                marker.setIcon(window.policeCarIconNormal);
             }
+            
+            // 移除重置轨迹线颜色，因为每个段都有自己的颜色
+            // pathLine.setOptions({
+            //     strokeColor: traceColors[0]
+            // });
             
             document.getElementById('startBtn').disabled = false;
             document.getElementById('pauseBtn').disabled = true;
